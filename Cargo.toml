@@ -1,0 +1,4 @@
+[package]
+name = "sneaky-png"
+version = "0.1.0"
+authors = ["Guilherme Andrade <g@gandrade.net>"]
