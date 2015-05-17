@@ -57,7 +57,7 @@ fn read_bitindex_from(vec: &Vec<u8>, chunk_bitindex: u64) -> u8 {
     // The following are equivalent to division/remainder by 8.
     // The compiler would probably end up generating this, anyway.
     let subbyte_idx = (chunk_bitindex >> 3) as usize;
-    let subbit_idx = (chunk_bitindex & 0x000000000000000F) as usize;
+    let subbit_idx = (chunk_bitindex & 0x0000000000000007) as usize;
     return (vec[subbyte_idx] & (1 << subbit_idx)) >> subbit_idx;
 }
 
@@ -170,7 +170,7 @@ fn write_bitindex_to(vec: &mut Vec<u8>, chunk_bitindex: u64, bit: u8) {
     // The following are equivalent to division/remainder by 8.
     // The compiler would probably end up generating this, anyway.
     let subbyte_idx = (chunk_bitindex >> 3) as usize;
-    let subbit_idx = (chunk_bitindex & 0x000000000000000F) as usize;
+    let subbit_idx = (chunk_bitindex & 0x0000000000000007) as usize;
     vec[subbyte_idx] |= !(0xFFu8 ^ (bit << subbit_idx));
 }
 
