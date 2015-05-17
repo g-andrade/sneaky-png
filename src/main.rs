@@ -1,26 +1,47 @@
-#![feature(rand, core, collections, convert)]
-extern crate image;
+#![feature(rand, core, collections, convert, path_ext)]
 extern crate rand;
 extern crate core;
-extern crate getopts;
 extern crate collections;
+extern crate getopts;
+extern crate image;
 
-use std::fs::File;
-use std::path::{Path, PathBuf};
-use rand::Rand;
-use rand::isaac::IsaacRng;
-use image::{GenericImage, Pixel, DynamicImage};
-use core::num::Float;
-use core::cmp::{min};
-use getopts::Options;
 use std::env;
-use std::vec::{Vec};
-use std::io::{Stdin, Read, stdin, Stdout, Write, stdout};
+use std::vec::Vec;
+use std::fs::{OpenOptions, PathExt};
+use std::path::{Path, PathBuf};
+use std::io::{Stdin, Read, stdin, Stdout, Write, stdout, stderr};
+use core::num::Float;
+use core::cmp::min;
+use rand::{Rand, Rng};
+use rand::isaac::IsaacRng;
+use getopts::Options;
+use image::{GenericImage, Pixel, DynamicImage};
 
 const OUT_CHANNEL_COUNT: u8 = 4;
 const DEFAULT_BITMASK_SIZE: u8 = 3;
 const HEADER_SZ: usize = 20;
 
+
+
+macro_rules! println_stderr(
+    // from: https://stackoverflow.com/questions/27588416/how-to-send-output-to-stderr
+    ($($arg:tt)*) => (
+        match writeln!(&mut stderr(), $($arg)* ) {
+            Ok(_) => {},
+            Err(x) => panic!("Unable to write to stderr: {}", x),
+        }
+        )
+    );
+
+macro_rules! print_stderr(
+    // from: https://stackoverflow.com/questions/27588416/how-to-send-output-to-stderr
+    ($($arg:tt)*) => (
+        match write!(&mut stderr(), $($arg)* ) {
+            Ok(_) => {},
+            Err(x) => panic!("Unable to write to stderr: {}", x),
+        }
+        )
+    );
 
 
 fn calc_image_capacity(img: &DynamicImage, mask_bitsize: u8) -> usize {
@@ -33,8 +54,10 @@ fn calc_image_capacity(img: &DynamicImage, mask_bitsize: u8) -> usize {
 
 ///////////////////////////////////////////////////////////////////////
 fn read_bitindex_from(vec: &Vec<u8>, chunk_bitindex: u64) -> u8 {
-    let subbyte_idx = (chunk_bitindex / 8) as usize;
-    let subbit_idx = (chunk_bitindex % 8) as usize;
+    // The following are equivalent to division/remainder by 8.
+    // The compiler would probably end up generating this, anyway.
+    let subbyte_idx = (chunk_bitindex >> 3) as usize;
+    let subbit_idx = (chunk_bitindex & 0x000000000000000F) as usize;
     return (vec[subbyte_idx] & (1 << subbit_idx)) >> subbit_idx;
 }
 
@@ -42,6 +65,7 @@ fn read_bitindex_from(vec: &Vec<u8>, chunk_bitindex: u64) -> u8 {
 fn piggyback_data(prng: &mut IsaacRng, data_source: &mut Read, mask_bitsize: u8,
                   in_path: &Path, out_path: &Path) -> usize
 {
+    assert!( ! PathExt::exists(out_path) );
     let img = image::open(in_path).unwrap();
     let (width, height) = img.dimensions();
     let mut new_img = DynamicImage::new_rgba8(width, height);
@@ -92,22 +116,37 @@ fn piggyback_data(prng: &mut IsaacRng, data_source: &mut Read, mask_bitsize: u8,
     }
     assert!( chunk_bitindex == chunk_max_bitindex );
 
-    let ref mut fout = File::create(out_path).unwrap();
+    let ref mut fout = match
+        OpenOptions::new()
+        .read(false)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(out_path)
+    {
+            Ok(fout) => { fout }
+            Err(e)   => { panic!(
+                    "can't open file for output: {} ({:?})",
+                    e, out_path) }
+    };
+
     let _ = new_img.save(fout, image::PNG);
     chunk_bytes_read
 }
 
 
 fn encode(mask_bitsize: u8, image_paths_str: Vec<String>, output_dir_path_str: String) {
+    let mut prng = IsaacRng::new_unseeded(); // FIXME: very bad
     let mut data_source: Stdin = stdin();
-    let mut prng = IsaacRng::new_unseeded();
     let mut is_there_data = true;
     let mut img_idx = 0;
     while is_there_data {
-        for in_path_str in image_paths_str.clone() {
+        let mut shuffled_image_paths = image_paths_str.clone();
+        prng.shuffle( shuffled_image_paths.as_mut_slice() );
+        for in_path_str in shuffled_image_paths.clone() {
             let in_path = PathBuf::from(&in_path_str);
             let mut out_path = PathBuf::from(&output_dir_path_str);
-            out_path.push( format!("waat_{:020}.png", img_idx) );
+            out_path.push( format!("img_{:020}.png", img_idx) );
 
             let data_bytes_read = piggyback_data(&mut prng, &mut data_source, mask_bitsize,
                                                  &in_path, &out_path);
@@ -115,6 +154,10 @@ fn encode(mask_bitsize: u8, image_paths_str: Vec<String>, output_dir_path_str: S
             if !is_there_data {
                 break;
             }
+
+            println_stderr!(
+                "{:?}\n\t=> {:?}:\n\t{} bytes encoded\n",
+                in_path, out_path, data_bytes_read);
             img_idx += 1;
         }
     }
@@ -124,14 +167,15 @@ fn encode(mask_bitsize: u8, image_paths_str: Vec<String>, output_dir_path_str: S
 ///////////////////////////////////////////////////////////////////////
 fn write_bitindex_to(vec: &mut Vec<u8>, chunk_bitindex: u64, bit: u8) {
     assert!( bit < 2 );
-    let subbyte_idx = (chunk_bitindex / 8) as usize;
-    let subbit_idx = (chunk_bitindex % 8) as usize;
-    vec[subbyte_idx] &= 0xFF ^ (1 << subbit_idx); // clear
-    vec[subbyte_idx] |= bit << subbit_idx;      // set
+    // The following are equivalent to division/remainder by 8.
+    // The compiler would probably end up generating this, anyway.
+    let subbyte_idx = (chunk_bitindex >> 3) as usize;
+    let subbit_idx = (chunk_bitindex & 0x000000000000000F) as usize;
+    vec[subbyte_idx] |= !(0xFFu8 ^ (bit << subbit_idx));
 }
 
 
-fn unpiggyback_data(data_sink: &mut Write, mask_bitsize: u8, in_path: &Path) {
+fn unpiggyback_data(data_sink: &mut Write, mask_bitsize: u8, in_path: &Path) -> usize {
     let img = image::open(in_path).unwrap();
 
     let total_capacity = calc_image_capacity(&img, mask_bitsize);
@@ -173,15 +217,21 @@ fn unpiggyback_data(data_sink: &mut Write, mask_bitsize: u8, in_path: &Path) {
     chunk_data_vec.push_all(chunk_data_arr);
     chunk_data_vec.truncate(data_len);
     let _ = data_sink.write(chunk_data_vec.as_slice());
-
+    data_len
 }
 
 
 fn decode(mask_bitsize: u8, image_paths_str: Vec<String>) {
     let mut data_sink: Stdout = stdout();
-    for in_path_str in image_paths_str.clone() {
-        let in_path = PathBuf::from(&in_path_str);
-        unpiggyback_data(&mut data_sink, mask_bitsize, &in_path);
+    let mut in_paths : Vec<PathBuf> = Vec::new();
+    for in_path_str in image_paths_str {
+        in_paths.push( PathBuf::from(&in_path_str) );
+    }
+    in_paths.as_mut_slice().sort_by(|a, b| a.file_name().cmp( &(b.file_name()) ));
+
+    for in_path in in_paths {
+        let data_bytes_read = unpiggyback_data(&mut data_sink, mask_bitsize, &in_path);
+        println_stderr!("{:?}:\n\t{} bytes decoded\n", in_path, data_bytes_read)
     }
 }
 
@@ -190,7 +240,7 @@ fn decode(mask_bitsize: u8, image_paths_str: Vec<String>) {
 fn print_usage(program: &str, opts: Options) {
     // from getopts example
     let brief = format!("Usage: {} [options]", program);
-    print!("{}", opts.usage(&brief));
+    print_stderr!("{}", opts.usage(&brief));
 }
 
 fn main() {
