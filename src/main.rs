@@ -239,7 +239,7 @@ fn decode(mask_bitsize: u8, image_paths_str: Vec<String>) {
 ///////////////////////////////////////////////////////////////////////
 fn print_usage(program: &str, opts: Options) {
     // from getopts example
-    let brief = format!("Usage: {} [options]", program);
+    let brief = format!("Usage: {} [options] [image1 [image2 ..", program);
     print_stderr!("{}", opts.usage(&brief));
 }
 
@@ -250,7 +250,7 @@ fn main() {
     let mut opts = Options::new();
     opts.optflag("h", "help", "print this help menu");
     opts.optopt("e", "encode", "encode images and put them in PATH", "PATH");
-    opts.optopt("b", "bitmask_size", "size (in bits) of the blending mask", "3");
+    opts.optopt("b", "bitmask_size", "size (in bits) of the blending mask", "");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => { m }
         Err(f) => { panic!(f.to_string()) }
